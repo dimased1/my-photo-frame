@@ -100,6 +100,7 @@ async function handleCreateFeed(request, env) {
     }
     
     const currentPhoto = photos[Math.floor(Math.random() * photos.length)];
+    const lastUpdate = new Date().toISOString();
 
     const newFeed = {
       id: feedId,
@@ -109,7 +110,7 @@ async function handleCreateFeed(request, env) {
       size,
       photos,
       currentPhoto,
-      lastUpdate: new Date().toISOString(),
+      lastUpdate,
       photoCount: photos.length
     };
 
@@ -210,6 +211,18 @@ async function handlePhoto(request, env) {
   const token = url.searchParams.get('token');
   const feedId = url.searchParams.get('id');
 
+  // Handle OPTIONS for CORS preflight
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Max-Age': '86400',
+      }
+    });
+  }
+
   if (!feedId || !token) {
     return new Response('Missing parameters', { status: 400 });
   }
@@ -222,7 +235,47 @@ async function handlePhoto(request, env) {
     return new Response('Feed not found', { status: 404 });
   }
 
-  return Response.redirect(feed.currentPhoto, 302);
+  try {
+    // Fetch from Google Photos directly
+    const baseUrl = feed.currentPhoto.split('=')[0];
+    const sizeConfig = SIZES[feed.size] || SIZES.portrait;
+    
+    // Use baseline JPEG for e-ink compatibility
+    const optimizedUrl = `${baseUrl}=w${sizeConfig.width}-h${sizeConfig.height}-c-l85`;
+    
+    const imageResponse = await fetch(optimizedUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to fetch image: ${imageResponse.status}`);
+    }
+
+    const imageBuffer = await imageResponse.arrayBuffer();
+
+    // Return the photo with CORS and no-cache headers
+    return new Response(imageBuffer, {
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Content-Length': imageBuffer.byteLength.toString(),
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+      }
+    });
+  } catch (error) {
+    return new Response('Error fetching image: ' + error.message, { 
+      status: 500,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+      }
+    });
+  }
 }
 
 async function fetchPhotosFromAlbum(albumUrl, size) {
